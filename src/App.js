@@ -24,24 +24,38 @@ const nearPoint = (x, y, x1, y1, name) => {
   return Math.abs(x - x1) < 5 && Math.abs(y-y1)<5 ? name: null;
 }
 
+const onLine = (x1, y1, x2, y2, x, y, maxDistance=1) => {
+  const a = {x: x1, y: y1};
+  const b = {x: x2, y: y2};
+  const c = {x, y};
+  const offset = (distance(a, c) + distance(b, c)) - distance(a, b); 
+  return offset < maxDistance ? "inside": null;
+}
+
 const positionWithinElement = (x, y, element) => {
   const {type, x1, y1, x2, y2} = element;
-  if (type === "rectangle") {
-    const topLeft = nearPoint(x, y, x1, y1, "tl");
-    const topRight = nearPoint(x, y, x2, y1, "tr");
-    const bottomLeft = nearPoint(x, y, x1, y2, "bl");
-    const bottomRight = nearPoint(x, y, x2, y2, "br");
-    const inside = x >= x1 && x <= x2 && y >= y1 && y <= y2 ? "inside" : null;
-    return topLeft || topRight || bottomLeft || bottomRight || inside;
-  } else {
-    const a = {x: x1, y: y1};
-    const b = {x: x2, y: y2};
-    const c = {x, y};
-    const offset = (distance(a, c) + distance(b, c)) - distance(a, b); 
-    const inside = offset < 1 ? "inside": null;
-    const start = nearPoint(x, y, x1, y1, "start");
-    const end = nearPoint(x, y, x2, y2, "end");
-    return inside || start || end;
+  switch(type) {
+    case "line":
+      const on = onLine(x1, y1, x2, y2, x, y);
+      const start = nearPoint(x, y, x1, y1, "start");
+      const end = nearPoint(x, y, x2, y2, "end");
+      return on || start || end;
+    case "rectangle":
+      const topLeft = nearPoint(x, y, x1, y1, "tl");
+      const topRight = nearPoint(x, y, x2, y1, "tr");
+      const bottomLeft = nearPoint(x, y, x1, y2, "bl");
+      const bottomRight = nearPoint(x, y, x2, y2, "br");
+      const inside = x >= x1 && x <= x2 && y >= y1 && y <= y2 ? "inside" : null;
+      return topLeft || topRight || bottomLeft || bottomRight || inside;
+    case "pencil":
+      const betweenAnyPoint = element.points.some((point, index) => {
+        const nextPoint = element.points[index + 1];
+        if (!nextPoint) return false;
+        return onLine(point.x, point.y, nextPoint.x, nextPoint.y, x, y, 5) != null;
+      });
+      return betweenAnyPoint ? "inside" : null;
+    default:
+      throw new Error(`Type not recognized: ${type}`)
   }
 }
 
@@ -122,7 +136,7 @@ const useHistory = initialState => {
     } else {
       // discard the states later than the current index
       const updatedState = [...history].slice(0, index + 1);
-      setHistory(prevState => [...updatedState, newState]);
+      setHistory([...updatedState, newState]);
       setIndex(prevState => prevState + 1);
     }    
   }
@@ -155,7 +169,9 @@ function drawElement(roughCanvas, context, element) {
       roughCanvas.draw(element.roughElement)
       break;
     case "pencil":
-      const stroke = getSvgPathFromStroke(getStroke(element.points));
+      const stroke = getSvgPathFromStroke(getStroke(element.points, {
+        size: 12
+      }));
       context.fill(new Path2D(stroke));
       break;
     default:
@@ -205,10 +221,10 @@ function App() {
       case "rectangle":
         elementsCopy[id] = createElement(id, x1, y1, x2, y2, type);
         break;
-    }
-   
-    
-    elementsCopy[id] = updatedElement;
+      case "pencil":
+        elementsCopy[id].points = [...elementsCopy[id].points, {x:x2, y:y2}];
+        break;
+    }   
     setElements(elementsCopy, true);
   };
 
@@ -218,10 +234,10 @@ function App() {
       // if we are on an element
       const element = getElementAtPosition(clientX, clientY, elements);
       if (element) {
-        // offset from the top left corner
-        const offsetX = clientX - element.x1;
-        const offsetY = clientY - element.y1;
-        setSelectedElement({...element, offsetX, offsetY});
+        const beforeMoveX = clientX;
+        const beforeMoveY = clientY;
+        setSelectedElement({...element, beforeMoveX, beforeMoveY});
+        
         setElements(prevState => prevState); // make a snapshot in history
         if (element.position === "inside") {
           setAction("moving");
@@ -255,12 +271,20 @@ function App() {
       updateElement(index, x1, y1, clientX, clientY, tool);
 
     } else if (action === 'moving') {
-      const {id, x1, y1, x2, y2, offsetX, offsetY, type} = selectedElement;
-      const width = x2 - x1;
-      const height = y2 - y1;
-      const newX1 = clientX - offsetX;
-      const newY1 = clientY - offsetY;
-      updateElement(id, newX1, newY1, newX1 + width, newY1 + height, type);
+      const {id, x1, y1, x2, y2, beforeMoveX, beforeMoveY, type} = selectedElement;
+      const offsetX = clientX - beforeMoveX 
+      const offsetY = clientY - beforeMoveY
+      if (selectedElement.type ==="pencil") {
+        const newPoints = selectedElement.points.map(point => ({x: point.x+offsetX, y:point.y+offsetY}))
+        const elementsCopy = [...elements];
+        elementsCopy[id] = {
+          ...elementsCopy[id],
+          points: newPoints
+        };
+        setElements(elementsCopy, true);
+      } else {
+        updateElement(id, x1+offsetX, y1+offsetY, x2+offsetX, y2+offsetY, type);
+      }      
     } else if (action ==="resizing") {
       // position: 'tl', 'tr', 'bl', 'br', 'inside'
       // type: "line", "rectangle"
