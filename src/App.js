@@ -190,27 +190,57 @@ function drawElement(roughCanvas, context, element) {
 
 const adjustmentRequired = type => ['line', 'rectangular'].includes(type);
 
+const usePressedKeys = () => {
+  const [pressedKeys, setPressedKeys] = useState(new Set());
+  useEffect(() => {
+    const handleKeyDown = event => {
+      setPressedKeys(prevKeys => new Set(prevKeys).add(event.key));
+    };
+    const handleKeyUp = event => {
+      setPressedKeys(prevKeys => {
+        const updatedKeys = new Set(prevKeys);
+        updatedKeys.delete(event.key);
+        return updatedKeys;
+      });
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    }
+  }, [])
+  return pressedKeys;
+}
+
 function App() {
   // every time we use setElements current list of Elements is saved in history
   const [elements, setElements, undo, redo] = useHistory([]);
   const [action, setAction] = useState("none"); // drawing when the mouse is down
   const [tool, setTool] = useState("text");
+  const [panOffset, setPanOffset] = useState({x:0, y:0});
+  const [startPanMousePosition, setStartPanMousePosition] = useState({x:0, y:0});
   const [selectedElement, setSelectedElement] = useState(null);
   const textAreaRef = useRef();
-
+  const pressedKeys = usePressedKeys();
   
 
   useLayoutEffect(() => {
     const canvas = document.getElementById('canvas');
     const context = canvas.getContext('2d');
-    context.clearRect(0, 0, canvas.width, canvas.height);
-
     const roughCanvas = rough.canvas(canvas);
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.save();
+    context.translate(panOffset.x, panOffset.y);
+   
     elements.forEach(element => {
       if (action === 'writing' && selectedElement.id === element.id) return;
       drawElement(roughCanvas, context, element)
     });
-  }, [elements, action, selectedElement]);
+    context.restore();
+
+  }, [elements, action, selectedElement, panOffset]);
 
   useEffect(() => {
     const undoRedoFunction = event => {
@@ -227,6 +257,19 @@ function App() {
       document.removeEventListener("keydown", undoRedoFunction);
     }
   }, [undo, redo]);
+
+  useEffect(() => {
+    const panFunction = event => {
+      setPanOffset(prevState => ({
+        x: prevState.x - event.deltaX,
+        y: prevState.y - event.deltaY
+      }))
+    };
+    document.addEventListener('wheel', panFunction);
+    return () => {
+      document.removeEventListener("wheel", panFunction)
+    }
+  })
 
   useEffect(() => {
     const textArea = textAreaRef.current;
@@ -267,24 +310,43 @@ function App() {
     setElements(elementsCopy, true);
   };
 
+  const getMouseCoordinates = event => {
+    const clientX = event.clientX - panOffset.x;
+    const clientY = event.clientY - panOffset.y;
+    return {clientX, clientY};
+  }
+
   const handleMouseDown = (event) => {
     if (action === "writing") return; // when we are typing in the text area, click 
-    const {clientX, clientY} = event;
+    const {clientX, clientY} = getMouseCoordinates(event);
+
+    // if middle mouse OR press spacebar and move mouse
+    if (event.button === 1 || pressedKeys.has(" ")) {
+      setAction("panning");
+      setStartPanMousePosition({x: clientX, y:clientY});
+      return;
+    }
+
     if (tool === "selection") {
-      // if we are on an element
       const element = getElementAtPosition(clientX, clientY, elements);
       if (element) {
-        const beforeMoveX = clientX;
-        const beforeMoveY = clientY;
-        setSelectedElement({...element, beforeMoveX, beforeMoveY});
-        
+        if (element.type === "pencil") {
+          const xOffsets = element.points.map(point => clientX - point.x);
+          const yOffsets = element.points.map(point => clientY - point.y);
+          setSelectedElement({...element, xOffsets, yOffsets});
+        } else {
+          const offsetX = clientX - element.x1;
+          const offsetY = clientY - element.y1;
+          setSelectedElement({...element, offsetX, offsetY});
+        }
+          
         setElements(prevState => prevState); // make a snapshot in history
         if (element.position === "inside") {
           setAction("moving");
         } else {
           setAction("resizing");
         }        
-      }
+      }      
     }
     // when mouse down on "line" or "rectangle" mode
     else {
@@ -298,7 +360,17 @@ function App() {
   }
 
   const handleMouseMove = (event) => {
-    const {clientX, clientY} = event;
+    const {clientX, clientY} = getMouseCoordinates(event);
+
+    if (action === "panning") {
+      const deltaX = clientX - startPanMousePosition.x;
+      const deltaY = clientY - startPanMousePosition.y;
+      setPanOffset(prevState => ({
+        x: prevState.x + deltaX,
+        y: prevState.y + deltaY
+      }));
+      return;
+    }
 
     if (tool === "selection") {
       const element = getElementAtPosition(clientX, clientY, elements);
@@ -311,20 +383,25 @@ function App() {
       updateElement(index, x1, y1, clientX, clientY, tool);
 
     } else if (action === 'moving') {
-      const {id, x1, y1, x2, y2, beforeMoveX, beforeMoveY, type} = selectedElement;
-      const offsetX = clientX - beforeMoveX 
-      const offsetY = clientY - beforeMoveY
       if (selectedElement.type ==="pencil") {
-        const newPoints = selectedElement.points.map(point => ({x: point.x+offsetX, y:point.y+offsetY}))
+        const newPoints = selectedElement.points.map((_, index) => ({
+          x: clientX - selectedElement.xOffsets[index],
+          y: clientY - selectedElement.yOffsets[index]
+        }));
         const elementsCopy = [...elements];
-        elementsCopy[id] = {
-          ...elementsCopy[id],
+        elementsCopy[selectedElement.id] = {
+          ...elementsCopy[selectedElement.id],
           points: newPoints
         };
         setElements(elementsCopy, true);
       } else {
+        const {id, x1, x2, y1, y2, type, offsetX, offsetY} = selectedElement;
+        const width = x2 - x1;
+        const height = y2 - y1;
+        const newX1 = clientX - offsetX; 
+        const newY1 = clientY - offsetY;
         const options = type==="text" ? {text: selectedElement.text} : {}
-        updateElement(id, x1+offsetX, y1+offsetY, x2+offsetX, y2+offsetY, type, options);
+        updateElement(id, newX1, newY1, newX1+width, newY1+height, type, options);
       }      
     } else if (action ==="resizing") {
       // position: 'tl', 'tr', 'bl', 'br', 'inside'
@@ -336,7 +413,7 @@ function App() {
   }
 
   const handleMouseUp = (event) => {
-    const {clientX, clientY} = event;
+    const {clientX, clientY} = getMouseCoordinates(event);
     // If we mouse up a text at the same location => edit text; otherwise move text element
     if (selectedElement) {
       if (
@@ -371,7 +448,7 @@ function App() {
 
   return (
     <div>
-      <div style={{position: "fixed"}}>
+      <div style={{position: "fixed", zIndex: 2}}>
         <input type='radio' id='selection' checked={tool==="selection"} onChange={()=>setTool("selection")} />
         <label htmlFor='selection'>Selection</label>
         <input type="radio" id="line" checked={tool==="line"} onChange={()=>setTool("line")}/>
@@ -389,8 +466,8 @@ function App() {
           onBlur={handleBlur}
           style={{
             position: "fixed", 
-            top: selectedElement.y1-2, 
-            left: selectedElement.x1,
+            top: selectedElement.y1-2+panOffset.y, 
+            left: selectedElement.x1+panOffset.x,
             font: "24px sans-serif",
             margin: 0,
             padding: 0,
@@ -409,13 +486,13 @@ function App() {
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        style={{position: "absolute", zIndex: 1}}
       >
         Canvas
       </canvas>
-      <div style={{position: "fixed", bottom:0, padding:10}}>
+      <div style={{position: "fixed", zIndex: 2, bottom:0, padding:10}}>
         <button onClick={undo}>Undo</button>
         <button onClick={redo}>Redo</button>
-        <button onClick={()=>textAreaRef.current.focus()}>TestClick</button>
       </div>
     </div>
     
