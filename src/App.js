@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import rough from "roughjs/bundled/rough.esm";
 import getStroke from "perfect-freehand";
 
@@ -15,6 +15,8 @@ function createElement(id, x1, y1, x2, y2, type) {
       return {id, x1, y1, x2, y2, type, roughElement};
     case "pencil":
       return {id, type, points: [{x:x1, y:y1}]};
+    case "text":
+      return {id, type, x1, y1, x2, y2, text:""}
     default:
       throw new Error(`Type not recognised: ${type}`)
   }
@@ -54,6 +56,8 @@ const positionWithinElement = (x, y, element) => {
         return onLine(point.x, point.y, nextPoint.x, nextPoint.y, x, y, 5) != null;
       });
       return betweenAnyPoint ? "inside" : null;
+    case "text":
+      return x >= x1 && x<=x2 && y>=y1 && y <= y2 ? "inside" : null;
     default:
       throw new Error(`Type not recognized: ${type}`)
   }
@@ -174,6 +178,11 @@ function drawElement(roughCanvas, context, element) {
       }));
       context.fill(new Path2D(stroke));
       break;
+    case "text":
+      context.textBaseline = "top";
+      context.font = '24px sans-serif';
+      context.fillText(element.text, element.x1, element.y1);
+      break;
     default:
       throw new Error(`Type not recognised: ${element.type}`);
   }
@@ -185,8 +194,11 @@ function App() {
   // every time we use setElements current list of Elements is saved in history
   const [elements, setElements, undo, redo] = useHistory([]);
   const [action, setAction] = useState("none"); // drawing when the mouse is down
-  const [tool, setTool] = useState("pencil");
+  const [tool, setTool] = useState("text");
   const [selectedElement, setSelectedElement] = useState(null);
+  const textAreaRef = useRef();
+
+  
 
   useLayoutEffect(() => {
     const canvas = document.getElementById('canvas');
@@ -194,8 +206,11 @@ function App() {
     context.clearRect(0, 0, canvas.width, canvas.height);
 
     const roughCanvas = rough.canvas(canvas);
-    elements.forEach(element => drawElement(roughCanvas, context, element))
-  }, [elements])
+    elements.forEach(element => {
+      if (action === 'writing' && selectedElement.id === element.id) return;
+      drawElement(roughCanvas, context, element)
+    });
+  }, [elements, action, selectedElement]);
 
   useEffect(() => {
     const undoRedoFunction = event => {
@@ -213,7 +228,18 @@ function App() {
     }
   }, [undo, redo]);
 
-  const updateElement = (id, x1, y1, x2, y2, type) => {
+  useEffect(() => {
+    const textArea = textAreaRef.current;
+    if (action === "writing") {
+      setTimeout(() =>{
+        textArea.focus();
+        textArea.value = selectedElement.text;
+      }, 0)
+      
+    } 
+  }, [action, selectedElement]);
+
+  const updateElement = (id, x1, y1, x2, y2, type, options) => {
     const elementsCopy = [...elements];
 
     switch(type) {
@@ -224,11 +250,25 @@ function App() {
       case "pencil":
         elementsCopy[id].points = [...elementsCopy[id].points, {x:x2, y:y2}];
         break;
+      case "text":
+        const textWidth = document
+          .getElementById('canvas')
+          .getContext('2d')
+          .measureText(options.text).width;
+        const textHeight = 24;
+        elementsCopy[id] = {
+          ...createElement(id, x1, y1, x1+textWidth, y1+textHeight, type),
+          text: options.text
+        }
+        break;
+      default:
+        throw new Error(`Updating element type ${type} not exists`)
     }   
     setElements(elementsCopy, true);
   };
 
   const handleMouseDown = (event) => {
+    if (action === "writing") return; // when we are typing in the text area, click 
     const {clientX, clientY} = event;
     if (tool === "selection") {
       // if we are on an element
@@ -252,7 +292,7 @@ function App() {
       const element = createElement(id, clientX, clientY, clientX, clientY, tool);
       setElements(prevState => [...prevState, element]);
       setSelectedElement(element);
-      setAction("drawing");
+      setAction(tool === "text" ? "writing" : "drawing");
     }
     
   }
@@ -283,7 +323,8 @@ function App() {
         };
         setElements(elementsCopy, true);
       } else {
-        updateElement(id, x1+offsetX, y1+offsetY, x2+offsetX, y2+offsetY, type);
+        const options = type==="text" ? {text: selectedElement.text} : {}
+        updateElement(id, x1+offsetX, y1+offsetY, x2+offsetX, y2+offsetY, type, options);
       }      
     } else if (action ==="resizing") {
       // position: 'tl', 'tr', 'bl', 'br', 'inside'
@@ -294,8 +335,19 @@ function App() {
     }
   }
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (event) => {
+    const {clientX, clientY} = event;
+    // If we mouse up a text at the same location => edit text; otherwise move text element
     if (selectedElement) {
+      if (
+        selectedElement.type === "text" &&
+        clientX - selectedElement.beforeMoveX === 0 &&
+        clientY - selectedElement.beforeMoveY === 0
+      ) {
+        setAction('writing');
+        return;
+      }
+
       const index = selectedElement.id;
       const {id, type} = elements[index];
       
@@ -305,8 +357,16 @@ function App() {
       }
     }
     
+    if (action === 'writing') return;
     setAction("none");
     setSelectedElement(null);
+  }
+
+  const handleBlur = event => {
+    const {id, x1, y1, type} = selectedElement;
+    setAction("none");
+    setSelectedElement(null);
+    updateElement(id, x1, y1, null, null, type, {text: event.target.value});
   }
 
   return (
@@ -320,8 +380,28 @@ function App() {
         <label htmlFor='rectangle'>Rectangle</label>
         <input type="radio" id="pencil" checked={tool==='pencil'} onChange={()=>setTool("pencil")} />
         <label htmlFor="pencil">Pencil</label>
+        <input type="radio" id='text' checked={tool==='text'} onChange={()=>setTool('text')}/>
+        <label htmlFor='text'>Text</label>
       </div>
-
+      {action ==='writing' ? (
+        <textarea 
+          ref={textAreaRef} 
+          onBlur={handleBlur}
+          style={{
+            position: "fixed", 
+            top: selectedElement.y1-2, 
+            left: selectedElement.x1,
+            font: "24px sans-serif",
+            margin: 0,
+            padding: 0,
+            border: 0,
+            outline: 0,
+            resize: "auto",
+            overflow: "hidden",
+            background: "transparent"
+          }} 
+        /> 
+      ) : null}
       <canvas 
         id="canvas" 
         width={window.innerWidth}
@@ -335,6 +415,7 @@ function App() {
       <div style={{position: "fixed", bottom:0, padding:10}}>
         <button onClick={undo}>Undo</button>
         <button onClick={redo}>Redo</button>
+        <button onClick={()=>textAreaRef.current.focus()}>TestClick</button>
       </div>
     </div>
     
