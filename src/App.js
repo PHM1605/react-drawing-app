@@ -221,6 +221,8 @@ function App() {
   const [panOffset, setPanOffset] = useState({x:0, y:0});
   const [startPanMousePosition, setStartPanMousePosition] = useState({x:0, y:0});
   const [selectedElement, setSelectedElement] = useState(null);
+  const [scale, setScale] = useState(1);
+  const [scaleOffset, setScaleOffset] = useState({x:0, y:0});
   const textAreaRef = useRef();
   const pressedKeys = usePressedKeys();
   
@@ -231,8 +233,17 @@ function App() {
     const roughCanvas = rough.canvas(canvas);
 
     context.clearRect(0, 0, canvas.width, canvas.height);
+
+    const scaledWidth = canvas.width * scale;
+    const scaledHeight = canvas.height * scale;
+    const scaleOffsetX = (scaledWidth - canvas.width) / 2;
+    const scaleOffsetY = (scaledHeight - canvas.height) / 2;
+    setScaleOffset({x: scaleOffsetX, y:scaleOffsetY});
+
+    
     context.save();
-    context.translate(panOffset.x, panOffset.y);
+    context.translate(panOffset.x * scale - scaleOffsetX, panOffset.y * scale - scaleOffsetY);
+    context.scale(scale, scale);
    
     elements.forEach(element => {
       if (action === 'writing' && selectedElement.id === element.id) return;
@@ -240,7 +251,7 @@ function App() {
     });
     context.restore();
 
-  }, [elements, action, selectedElement, panOffset]);
+  }, [elements, action, selectedElement, panOffset, scale]);
 
   useEffect(() => {
     const undoRedoFunction = event => {
@@ -259,17 +270,21 @@ function App() {
   }, [undo, redo]);
 
   useEffect(() => {
-    const panFunction = event => {
-      setPanOffset(prevState => ({
-        x: prevState.x - event.deltaX,
-        y: prevState.y - event.deltaY
-      }))
+    const panOrZoomFunction = event => {
+      if (pressedKeys.has("Meta") || pressedKeys.has("z")) {
+        onZoom(event.deltaY * -0.001)
+      } else {
+        setPanOffset(prevState => ({
+          x: prevState.x - event.deltaX,
+          y: prevState.y - event.deltaY
+        }));
+      }      
     };
-    document.addEventListener('wheel', panFunction);
+    document.addEventListener('wheel', panOrZoomFunction);
     return () => {
-      document.removeEventListener("wheel", panFunction)
+      document.removeEventListener("wheel", panOrZoomFunction)
     }
-  })
+  }, [pressedKeys])
 
   useEffect(() => {
     const textArea = textAreaRef.current;
@@ -311,8 +326,8 @@ function App() {
   };
 
   const getMouseCoordinates = event => {
-    const clientX = event.clientX - panOffset.x;
-    const clientY = event.clientY - panOffset.y;
+    const clientX = (event.clientX - panOffset.x * scale + scaleOffset.x) / scale;
+    const clientY = (event.clientY - panOffset.y * scale + scaleOffset.y) / scale;
     return {clientX, clientY};
   }
 
@@ -320,7 +335,7 @@ function App() {
     if (action === "writing") return; // when we are typing in the text area, click 
     const {clientX, clientY} = getMouseCoordinates(event);
 
-    // if middle mouse OR press spacebar and move mouse
+    // if middle mouse OR press Spacebar and move mouse
     if (event.button === 1 || pressedKeys.has(" ")) {
       setAction("panning");
       setStartPanMousePosition({x: clientX, y:clientY});
@@ -446,6 +461,10 @@ function App() {
     updateElement(id, x1, y1, null, null, type, {text: event.target.value});
   }
 
+  const onZoom = (delta) => {
+    setScale(prevState => Math.min(Math.max(prevState + delta, 0.1), 10));
+  }
+
   return (
     <div>
       <div style={{position: "fixed", zIndex: 2}}>
@@ -466,9 +485,9 @@ function App() {
           onBlur={handleBlur}
           style={{
             position: "fixed", 
-            top: selectedElement.y1-2+panOffset.y, 
-            left: selectedElement.x1+panOffset.x,
-            font: "24px sans-serif",
+            top: (selectedElement.y1 - 2 + panOffset.y) * scale - scaleOffset.y, 
+            left: (selectedElement.x1 + panOffset.x) * scale - scaleOffset.x,
+            font: `${24*scale}px sans-serif`,
             margin: 0,
             padding: 0,
             border: 0,
@@ -491,6 +510,11 @@ function App() {
         Canvas
       </canvas>
       <div style={{position: "fixed", zIndex: 2, bottom:0, padding:10}}>
+        <button onClick={()=>onZoom(-0.1)}>-</button>
+        <span onClick={()=>setScale(1)}>
+          {new Intl.NumberFormat("en-GB", {style: "percent"}).format(scale)}
+        </span>
+        <button onClick={()=>onZoom(0.1)}>+</button>
         <button onClick={undo}>Undo</button>
         <button onClick={redo}>Redo</button>
       </div>
